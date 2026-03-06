@@ -20,6 +20,8 @@ INCLUDE = [
     "ingestion_program/",
     "scoring_program/",
     "pages/",
+    "dev_phase/input_data.zip",
+    "dev_phase/reference_data.zip",
 ]
 
 
