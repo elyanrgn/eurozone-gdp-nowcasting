@@ -1,0 +1,2 @@
+command: python scoring.py --reference-dir $input --prediction-dir $program --output-dir $output
+description: Scoring program for EuroZone GDP Nowcasting (primary metric: RMSE)

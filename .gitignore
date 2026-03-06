@@ -1,0 +1,10 @@
+dev_phase/
+ingestion_res/
+scoring_res/
+bundle.zip
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.egg-info/
+.ipynb_checkpoints/

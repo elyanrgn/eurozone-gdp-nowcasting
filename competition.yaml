@@ -1,0 +1,81 @@
+---
+# EuroZone GDP Nowcasting — Codabench Competition Configuration
+# Based on: https://docs.codabench.org/latest/Organizers/Benchmark_Creation/Yaml-Structure/
+
+version: 2
+
+title: "EuroZone GDP Nowcasting"
+description: "Predict quarterly GDP growth rates for 9 Euro Area countries using monthly leading economic indicators (BCI, CCI, unemployment, inflation, interest rates, exchange rates). Can your model anticipate recessions, recoveries, and shocks like COVID-19?"
+image: logo.png
+terms: pages/terms.md
+registration_auto_approve: True
+enable_detailed_results: False
+
+# ── Pages ──────────────────────────────────────────────────────────────────────
+pages:
+  - title: Overview
+    file: pages/overview.md
+  - title: Participate
+    file: pages/participate.md
+  - title: Starter Code
+    file: pages/seed.md
+  - title: Timeline
+    file: pages/timeline.md
+
+# ── Tasks ──────────────────────────────────────────────────────────────────────
+tasks:
+  - index: 0
+    name: GDP Nowcasting Task
+    description: Predict QoQ GDP growth (%) from monthly macro indicators.
+    ingestion_program: ingestion_program
+    scoring_program: scoring_program
+    reference_data: dev_phase/reference_data
+    input_data: dev_phase/input_data
+
+# ── Solutions (baseline) ───────────────────────────────────────────────────────
+solutions:
+  - index: 0
+    path: solution
+    tasks:
+      - 0
+
+# ── Phases ─────────────────────────────────────────────────────────────────────
+phases:
+  - index: 0
+    name: Development Phase
+    description: "Train on 2000-Q2 to 2015-Q4. Predict 2016-Q1 to 2019-Q4. Leaderboard shows test RMSE."
+    start: 2025-01-06 00:00:00
+    end: 2025-03-28 23:59:59
+    max_submissions: 100
+    max_submissions_per_day: 5
+    execution_time_limit: 300
+    tasks:
+      - 0
+
+# ── Leaderboard ────────────────────────────────────────────────────────────────
+leaderboards:
+  - title: Results
+    key: main
+    submission_rule: Force_Best
+    columns:
+      - title: "RMSE (test)"
+        key: score
+        index: 0
+        sorting: asc
+        precision: 4
+      - title: "MAE (test)"
+        key: test_MAE
+        index: 1
+        sorting: asc
+        precision: 4
+      - title: "R2 (test)"
+        key: test_R2
+        index: 2
+        sorting: desc
+        precision: 4
+      - title: "RMSE (private)"
+        key: private_test_RMSE
+        index: 3
+        sorting: asc
+        precision: 4
+        hidden: True

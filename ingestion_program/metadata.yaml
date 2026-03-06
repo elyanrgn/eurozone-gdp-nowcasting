@@ -1,0 +1,2 @@
+command: python ingestion.py --data-dir $input --output-dir $output --submission-dir $program
+description: Ingestion program for EuroZone GDP Nowcasting
