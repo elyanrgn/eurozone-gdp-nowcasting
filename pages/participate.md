@@ -1,77 +1,129 @@
 # How to Participate
 
-## 1. Understanding the Task
+## 1. Understand the data format
 
-You must predict the **quarter-on-quarter GDP growth rate** (in %) for 9 Euro Area countries:
-Austria (AT), Belgium (BE), Germany (DE), Greece (EL), Spain (ES), Ireland (IE),
-Italy (IT), Netherlands (NL), and Portugal (PT).
+You receive the **raw monthly macroeconomic panel** for 10 Euro Area countries. Each CSV file has:
 
-Each sample in the dataset corresponds to **one country × one quarter**.  
-The features are monthly macro indicators observed during the 3 months of that quarter.
+- `Time` — month timestamp (YYYY-MM-DD, always the 1st of the month)
+- `country` — ISO country code (AT, BE, DE, EL, ES, FR, IE, IT, NL, PT)
+- 111 macroeconomic variables
 
-**This is a regression task.** The primary metric is **RMSE** (lower is better).
+**Key property:** quarterly variables (GDP, employment, national accounts, balance sheets) are only populated on quarter-end months (March, June, September, December). All other months have `NaN` for these columns. Monthly variables (confidence, inflation, unemployment, etc.) are populated every month.
 
----
+### File layout
 
-## 2. Dataset Description
-
-### Features (24 columns)
-
-| Column group | Description |
-|---|---|
-| `country` | ISO country code (AT, BE, DE, EL, ES, IE, IT, NL, PT) |
-| `year` | Year of the quarter |
-| `quarter_end` | Date of the last month of the quarter (YYYY-MM-DD) |
-| `BCI_m1/m2/m3` | Business Confidence Index — months 1, 2, 3 of the quarter |
-| `CCI_m1/m2/m3` | Consumer Confidence Index |
-| `SHIX_m1/m2/m3` | Share price index |
-| `HICPOV_m1/m2/m3` | HICP overall inflation index |
-| `UNETOT_m1/m2/m3` | Total unemployment rate (%) |
-| `LTIRT_m1/m2/m3` | Long-term interest rate (%) |
-| `REER42_m1/m2/m3` | Real effective exchange rate (42 partners) |
-
-### Target
-
-`GDP_growth` — quarter-on-quarter % change in real GDP.
-
-### Data splits
-
-| Split | Period | Rows | Purpose |
-|---|---|---|---|
-| train | 2000 Q2 – 2015 Q4 | 567 | Model training |
-| test | 2016 Q1 – 2019 Q4 | 144 | Dev-phase leaderboard |
-| private_test | 2020 Q1 – 2025 Q3 | 204 | Final scoring (includes COVID shock) |
-
----
-
-## 3. Submission Format
-
-Submit a single Python file named **`submission.py`** that exposes one function:
-
-```python
-def get_model():
-    """Return an untrained scikit-learn compatible estimator."""
-    ...
-    return model
+```
+dev_phase/input_data/train/
+    train_features.csv          # raw monthly panel, 1890 rows × 113 cols
+    train_labels.csv            # columns: country, Time, GDP_growth (630 rows)
+    
+dev_phase/input_data/test/
+    test_features.csv           # raw monthly panel, 480 rows × 113 cols
+    test_labels_skeleton.csv    # columns: country, Time — defines prediction order
 ```
 
-The model must implement `.fit(X, y)` and `.predict(X)`.
+The `test_labels_skeleton.csv` tells you which `(country, quarter-end month)` pairs you must predict and in what order. **Your predictions must match this ordering exactly.**
 
 ---
 
-## 4. Submitting
+## 2. Understand the submission API
+
+You submit a single file `submission.py` that must expose this function:
+
+```python
+def get_predictions(
+    X_train_raw:    pd.DataFrame,   # raw monthly panel, train period
+    y_train:        pd.DataFrame,   # quarterly labels (country, Time, GDP_growth)
+    X_test_raw:     pd.DataFrame,   # raw monthly panel, test period
+    label_skeleton: pd.DataFrame,   # (country, Time) pairs to predict — defines order
+) -> array-like:
+    ...
+    return predictions  # 1-D array of float, len == len(label_skeleton)
+```
+
+The ingestion program will call your function with the real data and check that you return exactly `len(label_skeleton)` values in the correct order.
+
+---
+
+## 3. Variable reference
+
+### Monthly variables (~40 columns, always populated)
+
+| Code | Description |
+|---|---|
+| `BCI` | Business Confidence Index |
+| `CCI` | Consumer Confidence Index |
+| `ESENTIX` | Economic Sentiment Index |
+| `ICONFIX`, `CCONFIX`, `KCONFIX`, `RTCONFIX`, `SCONFIX` | Sector confidence indices (industry, construction, retail, services) |
+| `HICPOV` | HICP — overall inflation |
+| `HICPG`, `HICPIN`, `HICPNEF`, `HICPSV`, `HICPNG` | HICP components (goods, energy, non-energy, services, non-goods) |
+| `UNETOT`, `UNEO25`, `UNEU25` | Unemployment rate (total, over-25, under-25) |
+| `LTIRT` | Long-term interest rate (%) |
+| `REER42` | Real effective exchange rate (42 trading partners) |
+| `SHIX` | Share price index |
+| `IPMN`, `IPCAG`, `IPCOG`, `IPDCOG`, `IPNDCOG`, `IPING`, `IPNRG` | Industrial production indices |
+| `TRNMN`, `TRNCAG`, `TRNCOG`, `TRNDCOG`, `TRNNDCOG`, `TRNING`, `TRNNRG` | Industrial turnover indices |
+| `PPICAG`, `PPICOG`, `PPINDCOG`, `PPIDCOG`, `PPIING`, `PPINRG` | Producer price indices |
+
+### Quarterly variables (~71 columns, NaN on non-quarter-end months)
+
+| Code | Description |
+|---|---|
+| `GDP` | Real GDP (chain-linked, millions €) |
+| `EXPGS`, `IMPGS` | Exports / Imports of goods & services |
+| `GFCE` | Government final consumption expenditure |
+| `HFCE` | Household final consumption expenditure |
+| `CONSD`, `CONSND`, `CONSSD`, `CONSSV` | Consumption sub-components (durable, non-durable, semi-durable, services) |
+| `GFCF`, `GCF` | Gross fixed capital formation / Gross capital formation |
+| `GFACON`, `GFAMG` | Fixed investment sub-components (construction, machinery) |
+| `GNFCPS`, `GNFCIR` | Non-financial corporation saving / investment ratio |
+| `EMP`, `SEMP` | Total employment / self-employment |
+| `EMP*` (10 codes) | Employment by sector (agriculture, industry, manufacturing, construction, retail, IT, finance, real estate, professional, public) |
+| `TEMP`, `THOURS` | Temporary employment, total hours worked |
+| `ULC*` (8 codes) | Unit labour costs by sector |
+| `WS`, `ESC`, `RPRP` | Wage sum, employer social contributions, real property prices |
+| `DFGDP`, `GHIR`, `GHSR` | GDP deflator, household investment/saving rates |
+| `HPRC` | House price index |
+| `TASS.*`, `TLB.*` | Total financial assets/liabilities (short/long-term, loans/deposits) |
+| `GGASS.*`, `GGLB.*` | Government financial assets/liabilities |
+| `HHASS.*`, `HHLB.*` | Household financial assets/liabilities |
+| `NFCASS.*`, `NFCLB.*` | Non-financial corporation financial assets/liabilities |
+
+**Note:** not all variables are available for all 10 countries. Some columns will be `NaN` for specific country×month combinations even at quarter-end dates.
+
+---
+
+## 4. Things to try
+
+**Feature engineering**
+- Aggregate monthly data per quarter: mean, last value, first-to-last change (momentum), rolling volatility
+- Compute year-on-year changes to remove seasonality
+- Lag features: use indicators from the previous quarter(s) for a forecasting component
+- Create cross-country features (e.g. German BCI as a leading indicator for smaller economies)
+
+**Variable selection**
+- Many columns are highly correlated — use correlation filtering, PCA, or feature importance
+- Some columns have >50% NaN across all countries — consider dropping them
+- Quarterly variables that appear in only 6/10 countries add noise for country-pooled models
+
+**Modelling**
+- GradientBoosting / XGBoost / LightGBM tend to work well on panel tabular data
+- Country fixed effects (one-hot encoding) can capture structural level differences
+- Train one model per country vs. one pooled model — both have trade-offs
+- Panel-aware cross-validation: never use future quarters to validate a past one
+
+**Robustness to COVID**
+- The private test includes extreme observations (−17.8% to +22.8%)
+- Consider Huber loss / quantile regression to reduce sensitivity to outliers
+- Models that incorporate global shock indicators (Euro Area aggregates) may generalise better
+
+---
+
+## 5. Submitting
 
 1. Write your `submission.py`.
-2. Zip it (just the file, not a folder): `zip my_submission.zip submission.py`
-3. Upload on the *My Submissions* tab.
+2. Test it locally (see the Starter Code tab).
+3. Zip the file: `zip my_submission.zip submission.py`
+4. Upload on the **My Submissions** tab.
 
----
-
-## 5. Tips for Good Performance
-
-- Feature engineering: try rolling statistics, quarter-over-quarter differences, or country interaction terms.
-- The private test set includes the COVID-19 shock (2020 Q1–Q2). Models that generalise to structural breaks will score better.
-- Ensemble methods (Random Forest, Gradient Boosting, XGBoost) tend to work well on this kind of tabular panel data.
-- Country fixed effects (one-hot encoding of `country`) can capture structural differences.
-
-Good luck!
+**Limits:** 100 total submissions, 5 per day. Execution timeout: 5 minutes per submission.

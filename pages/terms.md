@@ -1,31 +1,39 @@
 # Terms and Conditions
 
-By participating in this competition, you agree to the following:
+By participating in this competition, you agree to the following terms.
 
 ## 1. Eligibility
-This competition is open to all registered students enrolled in the DataCamp course at CentraleSupélec / HI-Paris. Faculty, teaching assistants, and competition organizers are not eligible to win.
 
-## 2. Data Usage
-The dataset provided is derived from publicly available macroeconomic data for Euro Area countries. It may only be used for the purposes of this competition and related academic work.
+This competition is open to all students enrolled in the DataCamp course at CentraleSupélec / HI-Paris. Faculty members, teaching assistants, and competition organizers are not eligible to win.
 
-## 3. Submission Rules
-- Each team must submit a valid `submission.py` file.
-- The code must run without errors in the provided Docker environment.
-- External data sources are **not allowed** unless explicitly authorized by the organizers.
-- Pre-trained models downloaded from the internet at inference time are **not allowed**.
-- All packages used must be listed in `requirements.txt` (or installable via pip).
+## 2. Data usage
 
-## 4. Collaboration
-Teams of up to 3 participants are allowed. Collaboration between teams is not permitted during the competition. Sharing code or methods publicly before the competition ends is prohibited.
+The dataset is derived from publicly available macroeconomic data for 10 Euro Area countries, sourced from Eurostat and the European Central Bank. It may only be used for the purposes of this competition and related academic coursework. Redistribution of the data outside this platform is not permitted.
+
+## 3. Submission rules
+
+- You must submit a valid `submission.py` file exposing the `get_predictions()` function as specified.
+- Your code must run without errors within the provided execution environment (Python 3.10, dependencies listed in `requirements.txt`).
+- **External data sources are not allowed** unless explicitly authorised by the organisers.
+- **Downloading pre-trained models at inference time is not allowed.** All dependencies must be installable via pip from `requirements.txt`.
+- Your submission must complete within the 5-minute execution time limit.
+
+## 4. Teams
+
+Teams of up to **3 participants** are allowed. Register your team before submitting. Collaboration between teams is not permitted during the competition. Sharing code or methods publicly before the competition closes is prohibited.
 
 ## 5. Reproducibility
-Winning submissions may be required to provide full reproducible code upon request.
 
-## 6. Academic Integrity
-This competition is a course deliverable. All standard academic integrity rules of CentraleSupélec apply. Plagiarism or use of pre-existing public solutions (e.g., from Kaggle) without disclosure is prohibited.
+Top-ranked teams may be asked to provide their full code and reproduce their results upon request. Submissions that cannot be reproduced may be disqualified.
+
+## 6. Academic integrity
+
+This competition is a course deliverable. All standard academic integrity rules of CentraleSupélec apply. Plagiarism, use of externally published solutions without disclosure, or any form of cheating is prohibited and may result in academic sanctions.
 
 ## 7. Prizes
-The competition may carry bonus points as part of the course grade. No monetary prizes are awarded.
+
+The competition may carry bonus points as part of the course grade, as communicated by the instructors. No monetary prizes are awarded.
 
 ## 8. Changes
-The organizers reserve the right to modify these terms, the timeline, or the evaluation metric with advance notice to participants.
+
+The organisers reserve the right to modify these terms, the timeline, or the evaluation metric with advance notice to participants via the competition forum.
