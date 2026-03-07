@@ -1,112 +1,76 @@
 """
-ingestion.py
-============
-Codabench ingestion program for the EuroZone GDP Nowcasting challenge.
+ingestion.py — Codabench ingestion program for EuroZone GDP Nowcasting.
 
-Steps:
-1. Load train data (features + labels).
-2. Import participant's ``get_model()`` from submission.py.
-3. Fit the model on train data.
-4. Predict on test and private_test sets.
-5. Save predictions as CSV files + metadata JSON.
+Calls participant's get_predictions(X_train_raw, y_train, X_test_raw, label_skeleton).
 
-Usage (local test):
+Usage (local):
     python ingestion_program/ingestion.py \
-        --data-dir    dev_phase/input_data \
-        --output-dir  ingestion_res \
-        --submission-dir solution
+        --data-dir dev_phase/input_data --output-dir ingestion_res --submission-dir solution
 """
 
-import argparse
-import json
-import os
-import sys
-import time
-import traceback
-
+import argparse, json, os, sys, time, traceback
 import numpy as np
 import pandas as pd
 
-# Make bench_utils importable from both ingestion_program/ and submission/
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from bench_utils import load_train_data, load_test_data
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
+from bench_utils import load_train_data, load_test_features
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--data-dir",       default="dev_phase/input_data")
 parser.add_argument("--output-dir",     default="ingestion_res")
 parser.add_argument("--submission-dir", default="solution")
 args, _ = parser.parse_known_args()
+os.makedirs(args.output_dir, exist_ok=True)
 
-DATA_DIR       = args.data_dir
-OUTPUT_DIR     = args.output_dir
-SUBMISSION_DIR = args.submission_dir
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-# ── Load submission ────────────────────────────────────────────────────────────
-
-print(f"[ingestion] Loading submission from: {SUBMISSION_DIR}")
-sys.path.insert(0, SUBMISSION_DIR)
+print(f"[ingestion] Loading submission from: {args.submission_dir}")
+sys.path.insert(0, args.submission_dir)
 try:
-    from submission import get_model
+    from submission import get_predictions
 except ImportError as e:
-    print(f"[ingestion] ERROR: Could not import get_model from submission.py\n  {e}")
-    sys.exit(1)
+    print(f"[ingestion] ERROR: Cannot import get_predictions\n  {e}"); sys.exit(1)
 
-# ── Load data ─────────────────────────────────────────────────────────────────
+print(f"[ingestion] Loading train data from: {args.data_dir}/train")
+X_train_raw, y_train = load_train_data(os.path.join(args.data_dir, "train"))
+print(f"  X_train_raw: {X_train_raw.shape}  |  y_train: {y_train.shape}")
 
-print(f"[ingestion] Loading train data from: {DATA_DIR}/train")
-train_dir = os.path.join(DATA_DIR, "train")
-X_train, y_train = load_train_data(train_dir)
-print(f"  X_train: {X_train.shape},  y_train: {y_train.shape}")
-
-# ── Train ─────────────────────────────────────────────────────────────────────
-
-print("[ingestion] Calling get_model() and fitting ...")
-t0 = time.time()
-try:
-    model = get_model()
-    model.fit(X_train, y_train)
-except Exception:
-    print("[ingestion] ERROR during model training:")
-    traceback.print_exc()
-    sys.exit(1)
-train_time = time.time() - t0
-print(f"  Training done in {train_time:.2f}s")
-
-# ── Predict on test and private_test ─────────────────────────────────────────
-
-metadata = {"train_time_s": round(train_time, 3)}
+metadata = {}
 
 for split in ["test", "private_test"]:
-    split_dir = os.path.join(DATA_DIR, split)
+    split_dir = os.path.join(args.data_dir, split)
     if not os.path.isdir(split_dir):
-        print(f"[ingestion] Skipping {split} (directory not found)")
-        continue
+        print(f"[ingestion] Skipping {split} (directory not found)"); continue
 
     print(f"[ingestion] Predicting on {split} ...")
-    t1 = time.time()
-    X = load_test_data(DATA_DIR, split=split)
+    X_test_raw = load_test_features(args.data_dir, split=split)
+    print(f"  X_test_raw: {X_test_raw.shape}")
+
+    # Label skeleton: tells participants which (country, quarter) pairs to predict
+    skeleton_path = os.path.join(split_dir, f"{split}_labels_skeleton.csv")
+    label_skeleton = pd.read_csv(skeleton_path)
+    label_skeleton["Time"] = pd.to_datetime(label_skeleton["Time"])
+    label_skeleton = label_skeleton.sort_values(["country", "Time"]).reset_index(drop=True)
+    print(f"  Expecting {len(label_skeleton)} predictions")
+
+    t0 = time.time()
     try:
-        preds = model.predict(X)
+        preds = get_predictions(X_train_raw.copy(), y_train.copy(),
+                                X_test_raw.copy(), label_skeleton.copy())
     except Exception:
-        print(f"[ingestion] ERROR during prediction on {split}:")
-        traceback.print_exc()
+        print(f"[ingestion] ERROR during get_predictions on {split}:")
+        traceback.print_exc(); sys.exit(1)
+    elapsed = time.time() - t0
+
+    preds = np.asarray(preds, dtype=float).ravel()
+    if len(preds) != len(label_skeleton):
+        print(f"[ingestion] ERROR: expected {len(label_skeleton)} predictions, got {len(preds)}")
         sys.exit(1)
-    pred_time = time.time() - t1
 
-    out_path = os.path.join(OUTPUT_DIR, f"{split}_predictions.csv")
-    pd.DataFrame({"GDP_growth_pred": preds}).to_csv(out_path, index=False)
-    print(f"  Saved {out_path}  ({len(preds)} rows, {pred_time:.2f}s)")
-    metadata[f"{split}_predict_time_s"] = round(pred_time, 3)
+    out = os.path.join(args.output_dir, f"{split}_predictions.csv")
+    pd.DataFrame({"GDP_growth_pred": preds}).to_csv(out, index=False)
+    print(f"  Saved {out}  ({len(preds)} rows, {elapsed:.2f}s)")
+    metadata[f"{split}_time_s"] = round(elapsed, 3)
 
-# ── Save metadata ─────────────────────────────────────────────────────────────
-
-meta_path = os.path.join(OUTPUT_DIR, "metadata.json")
-with open(meta_path, "w") as fh:
-    json.dump(metadata, fh, indent=2)
-print(f"[ingestion] Metadata saved to {meta_path}")
+with open(os.path.join(args.output_dir, "metadata.json"), "w") as f:
+    json.dump(metadata, f, indent=2)
 print("[ingestion] Done.")

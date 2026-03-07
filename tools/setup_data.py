@@ -3,18 +3,27 @@ setup_data.py
 =============
 Builds the competition dataset from the raw Euro Area country Excel files.
 
-Usage:
-    python tools/setup_data.py [--data-dir <path_to_xlsx_folder>]
+New format (v2): participants receive the RAW monthly panel for all 10 countries.
+Each row = one country × one month. GDP is only non-null on quarter-end months.
+Participants must handle:
+  - Mixed-frequency data (monthly indicators + quarterly GDP)
+  - Variable selection (111 columns, many with high missingness)
+  - Feature engineering from the raw time series
 
-The script:
-1. Reads the 9-country panel of monthly macro indicators.
-2. Constructs quarterly nowcasting samples (features = 3 monthly obs per quarter).
-3. Splits by time into train / test / private_test to avoid leakage.
-4. Saves CSVs in the expected Codabench layout:
-   dev_phase/input_data/train/     -> train_features.csv, train_labels.csv
-   dev_phase/input_data/test/      -> test_features.csv
-   dev_phase/input_data/private_test/ -> private_test_features.csv
-   dev_phase/reference_data/       -> test_labels.csv, private_test_labels.csv
+Target: predict GDP_growth (QoQ %) for each country × quarter observation.
+
+Temporal split (by quarter-end date):
+  train:        2000-Q2 → 2015-Q4
+  test:         2016-Q1 → 2019-Q4
+  private_test: 2020-Q1 → 2025-Q3  (includes COVID shock)
+
+Output structure:
+  dev_phase/input_data/train/train_features.csv       raw monthly panel (train period)
+  dev_phase/input_data/train/train_labels.csv         GDP_growth per country×quarter
+  dev_phase/input_data/test/test_features.csv         raw monthly panel (test period)
+  dev_phase/input_data/private_test/...               raw monthly panel (private period)
+  dev_phase/reference_data/test_labels.csv            GDP_growth per country×quarter
+  dev_phase/reference_data/private_test_labels.csv    GDP_growth per country×quarter
 """
 
 import argparse
@@ -23,7 +32,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-# ── Configuration ────────────────────────────────────────────────────────────
+# ── Configuration ─────────────────────────────────────────────────────────────
 
 COUNTRIES = {
     "AT": "ATdata.xlsx",
@@ -31,70 +40,191 @@ COUNTRIES = {
     "DE": "DEdata.xlsx",
     "EL": "ELdata.xlsx",
     "ES": "ESdata.xlsx",
+    "FR": "FRdata.xlsx",
     "IE": "IEdata.xlsx",
     "IT": "ITdata.xlsx",
     "NL": "NLdata.xlsx",
     "PT": "PTdata.xlsx",
 }
 
-# Monthly macro indicators available in all 9 countries
-MONTHLY_FEATURES = ["BCI", "CCI", "SHIX", "HICPOV", "UNETOT", "LTIRT", "REER42"]
-
-# Temporal split (inclusive)
-# train: 2000-Q2 → 2015-Q4
-# test:  2016-Q1 → 2019-Q4   (used during dev phase)
-# private_test: 2020-Q1 → 2025-Q3  (used for final scoring, includes COVID shock)
-TRAIN_END   = "2015-12-31"
-TEST_END    = "2019-12-31"
+# Quarter-end months that bound the splits
+TRAIN_END        = pd.Timestamp("2015-12-01")
+TEST_END         = pd.Timestamp("2019-12-01")
+# private_test: everything after TEST_END
 
 RANDOM_SEED = 42
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def find_file(data_dir: str, filename: str) -> str | None:
+    """Find a file by exact name or with a numeric prefix (uploaded format)."""
+    exact = os.path.join(data_dir, filename)
+    if os.path.exists(exact):
+        return exact
+    candidates = [f for f in os.listdir(data_dir) if f.endswith(f"_{filename}")]
+    if candidates:
+        return os.path.join(data_dir, candidates[0])
+    return None
+
+
 def load_country(path: str, country: str) -> pd.DataFrame:
     df = pd.read_excel(path)
-    # Normalise column names: GDP_DE -> GDP, BCI_DE -> BCI, etc.
-    df = df.rename(columns={c: c.replace(f"_{country}", "") for c in df.columns})
+    # Normalise column names: GDP_DE → GDP, TASS.LBD_DE → TASS.LBD
+    rename = {c: c.replace(f"_{country}", "") for c in df.columns}
+    df = df.rename(columns=rename)
     df["Time"] = pd.to_datetime(df["Time"])
     df["country"] = country
     return df.sort_values("Time").reset_index(drop=True)
 
 
-def build_quarterly_samples(df: pd.DataFrame, country: str) -> pd.DataFrame:
+def build_full_panel(data_dir: str) -> pd.DataFrame:
+    """Load all countries and stack into a single monthly panel."""
+    all_dfs = []
+    for country, filename in COUNTRIES.items():
+        path = find_file(data_dir, filename)
+        if path is None:
+            print(f"  [WARNING] {filename} not found in {data_dir}, skipping {country}.")
+            continue
+        print(f"  Loading {country} from {os.path.basename(path)} ...", end=" ")
+        df = load_country(path, country)
+        print(f"{len(df)} monthly rows, {df.shape[1]} columns")
+        all_dfs.append(df)
+
+    # Union of all column names (countries may differ slightly)
+    all_cols = set()
+    for d in all_dfs:
+        all_cols |= set(d.columns)
+
+    panel = pd.concat(
+        [d.reindex(columns=sorted(all_cols)) for d in all_dfs],
+        ignore_index=True
+    )
+    panel = panel.sort_values(["country", "Time"]).reset_index(drop=True)
+
+    # Ensure Time and country come first
+    front = ["Time", "country"]
+    rest  = [c for c in sorted(panel.columns) if c not in front]
+    return panel[front + rest]
+
+
+def build_labels(panel: pd.DataFrame) -> pd.DataFrame:
     """
-    For each quarter with an observed GDP value, create one sample whose
-    features are the 3 monthly observations within that quarter.
+    Compute GDP_growth (QoQ %) from the raw panel.
+    Returns a DataFrame with one row per country × quarter-end month.
     """
-    gdp_df = df[["Time", "GDP"]].dropna().copy()
-    gdp_df["GDP_growth"] = gdp_df["GDP"].pct_change() * 100  # QoQ %
-    gdp_df = gdp_df.dropna().reset_index(drop=True)
+    records = []
+    for country, grp in panel.groupby("country"):
+        grp = grp.sort_values("Time").copy()
+        gdp_rows = grp[grp["GDP"].notna()][["Time", "GDP"]].copy()
+        gdp_rows["GDP_growth"] = gdp_rows["GDP"].pct_change() * 100
+        gdp_rows = gdp_rows.dropna(subset=["GDP_growth"])
+        gdp_rows["country"] = country
+        records.append(gdp_rows[["country", "Time", "GDP_growth"]])
+    return pd.concat(records, ignore_index=True)
 
-    samples = []
-    for _, row in gdp_df.iterrows():
-        qt = row["Time"]
-        m1 = qt - pd.DateOffset(months=2)
-        m2 = qt - pd.DateOffset(months=1)
-        m3 = qt
 
-        sample = {
-            "country": country,
-            "year": qt.year,
-            "quarter_end": qt.strftime("%Y-%m-%d"),
-            "GDP_growth": round(row["GDP_growth"], 6),
-        }
-        for feat in MONTHLY_FEATURES:
-            if feat not in df.columns:
-                for i in range(1, 4):
-                    sample[f"{feat}_m{i}"] = np.nan
-                continue
-            for i, m in enumerate([m1, m2, m3], 1):
-                vals = df.loc[df["Time"] == m, feat]
-                sample[f"{feat}_m{i}"] = vals.values[0] if len(vals) > 0 else np.nan
+def temporal_split(panel: pd.DataFrame, labels: pd.DataFrame):
+    """
+    Split both panel and labels by the quarter-end cutoff dates.
+    The panel for a given split contains all monthly rows up to that split's end.
+    """
+    # Quarter-end months for each split
+    train_qends = labels[labels["Time"] <= TRAIN_END]["Time"].unique()
+    test_qends  = labels[(labels["Time"] > TRAIN_END) & (labels["Time"] <= TEST_END)]["Time"].unique()
+    pt_qends    = labels[labels["Time"] > TEST_END]["Time"].unique()
 
-        samples.append(sample)
+    # For the panel: include all months that belong to quarters in the split
+    # A quarter's months are: quarter_end - 2 months, quarter_end - 1 month, quarter_end
+    def months_for_qends(qends):
+        months = set()
+        for qe in qends:
+            for offset in [0, 1, 2]:
+                months.add(qe - pd.DateOffset(months=offset))
+        return months
 
-    return pd.DataFrame(samples)
+    train_months = months_for_qends(train_qends)
+    test_months  = months_for_qends(test_qends)
+    pt_months    = months_for_qends(pt_qends)
+
+    panel["_time_ts"] = panel["Time"]
+
+    panel_train = panel[panel["_time_ts"].isin(train_months)].drop(columns=["_time_ts"])
+    panel_test  = panel[panel["_time_ts"].isin(test_months)].drop(columns=["_time_ts"])
+    panel_pt    = panel[panel["_time_ts"].isin(pt_months)].drop(columns=["_time_ts"])
+    panel.drop(columns=["_time_ts"], inplace=True)
+
+    lbl_train = labels[labels["Time"] <= TRAIN_END]
+    lbl_test  = labels[(labels["Time"] > TRAIN_END) & (labels["Time"] <= TEST_END)]
+    lbl_pt    = labels[labels["Time"] > TEST_END]
+
+    return (panel_train, panel_test, panel_pt,
+            lbl_train.reset_index(drop=True),
+            lbl_test.reset_index(drop=True),
+            lbl_pt.reset_index(drop=True))
+
+
+# ── CI synthetic data ─────────────────────────────────────────────────────────
+
+def generate_synthetic_data(out_root: str):
+    """Generate small synthetic data for CI/testing (no xlsx files needed)."""
+    print("[setup_data] Generating synthetic data for CI ...")
+    np.random.seed(42)
+    countries = ["AT", "BE", "DE", "FR"]
+    # 60 months per country = 5 years
+    times = pd.date_range("2000-01-01", periods=60, freq="MS")
+    all_rows = []
+    for ct in countries:
+        for t in times:
+            row = {"Time": t, "country": ct}
+            for col in ["BCI", "CCI", "SHIX", "HICPOV", "UNETOT", "LTIRT",
+                        "REER42", "EXPGS", "IMPGS", "HFCE", "GFCF"]:
+                row[col] = np.random.randn() + 100
+            # GDP only on quarter ends
+            if t.month in (3, 6, 9, 12):
+                row["GDP"] = 500000 + np.random.randn() * 5000
+            else:
+                row["GDP"] = np.nan
+            all_rows.append(row)
+    panel = pd.DataFrame(all_rows).sort_values(["country", "Time"]).reset_index(drop=True)
+    panel["Time"] = panel["Time"].dt.strftime("%Y-%m-%d")
+
+    # Labels
+    label_rows = []
+    for ct in countries:
+        sub = panel[panel["country"] == ct].copy()
+        sub["GDP"] = pd.to_numeric(sub["GDP"], errors="coerce")
+        q = sub[sub["GDP"].notna()].copy()
+        q["GDP_growth"] = q["GDP"].pct_change() * 100
+        q = q.dropna(subset=["GDP_growth"])
+        for _, r in q.iterrows():
+            label_rows.append({"country": ct, "Time": r["Time"], "GDP_growth": r["GDP_growth"]})
+    labels = pd.DataFrame(label_rows)
+
+    cut1 = "2003-12-01"
+    cut2 = "2004-12-01"
+    splits = [
+        ("train",       panel[panel["Time"] <= cut1],  labels[labels["Time"] <= cut1]),
+        ("test",        panel[(panel["Time"] > cut1) & (panel["Time"] <= cut2)],
+                        labels[(labels["Time"] > cut1) & (labels["Time"] <= cut2)]),
+        ("private_test",panel[panel["Time"] > cut2],   labels[labels["Time"] > cut2]),
+    ]
+    for split, pnl, lbl in splits:
+        _save(pnl, out_root, f"dev_phase/input_data/{split}", f"{split}_features.csv")
+        if split == "train":
+            _save(lbl, out_root, f"dev_phase/input_data/{split}", "train_labels.csv")
+        else:
+            _save(lbl, out_root, "dev_phase/reference_data", f"{split}_labels.csv")
+    print("[setup_data] Synthetic data generated.")
+
+
+# ── Save helpers ──────────────────────────────────────────────────────────────
+
+def _save(df: pd.DataFrame, root: str, folder: str, name: str):
+    path = os.path.join(root, folder, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    df.to_csv(path, index=False)
+    print(f"  Saved {path}  ({df.shape})")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -102,152 +232,55 @@ def build_quarterly_samples(df: pd.DataFrame, country: str) -> pd.DataFrame:
 def main(data_dir: str, out_root: str):
     print(f"[setup_data] Reading raw data from: {data_dir}")
 
-    all_samples = []
-    for country, filename in COUNTRIES.items():
-        path = os.path.join(data_dir, filename)
-        if not os.path.exists(path):
-            # also try with the numeric prefix used in the uploaded files
-            candidates = [
-                f for f in os.listdir(data_dir)
-                if f.endswith(f"_{filename}")
-            ]
-            if candidates:
-                path = os.path.join(data_dir, candidates[0])
-            else:
-                print(f"  [WARNING] {filename} not found in {data_dir}, skipping.")
-                continue
-        print(f"  Loading {country} from {os.path.basename(path)} ...", end=" ")
-        df = load_country(path, country)
-        samples = build_quarterly_samples(df, country)
-        print(f"{len(samples)} quarterly samples")
-        all_samples.append(samples)
+    panel = build_full_panel(data_dir)
+    labels = build_labels(panel)
 
-    dataset = pd.concat(all_samples, ignore_index=True)
-    dataset["quarter_end"] = pd.to_datetime(dataset["quarter_end"])
-    dataset = dataset.sort_values(["country", "quarter_end"]).reset_index(drop=True)
+    print(f"\n[setup_data] Full panel: {panel.shape}  ({panel['country'].nunique()} countries, "
+          f"{panel['Time'].nunique()} monthly timestamps)")
+    print(f"[setup_data] Labels: {len(labels)} country×quarter observations")
 
-    # Fill the 1-2 missing values with forward fill per country
-    feat_cols = [c for c in dataset.columns if c not in ["country", "year", "quarter_end", "GDP_growth"]]
-    dataset[feat_cols] = dataset.groupby("country")[feat_cols].transform(lambda x: x.ffill().bfill())
+    (p_train, p_test, p_pt,
+     l_train, l_test, l_pt) = temporal_split(panel, labels)
 
-    # ── Temporal split ────────────────────────────────────────────────────────
-    train_mask        = dataset["quarter_end"] <= TRAIN_END
-    test_mask         = (dataset["quarter_end"] > TRAIN_END) & (dataset["quarter_end"] <= TEST_END)
-    private_test_mask = dataset["quarter_end"] > TEST_END
+    print(f"\n[setup_data] Splits:")
+    print(f"  train:        {len(p_train):5d} monthly rows | {len(l_train):4d} quarterly labels "
+          f"({l_train['Time'].min().date()} → {l_train['Time'].max().date()})")
+    print(f"  test:         {len(p_test):5d} monthly rows | {len(l_test):4d} quarterly labels "
+          f"({l_test['Time'].min().date()} → {l_test['Time'].max().date()})")
+    print(f"  private_test: {len(p_pt):5d} monthly rows | {len(l_pt):4d} quarterly labels "
+          f"({l_pt['Time'].min().date()} → {l_pt['Time'].max().date()})")
 
-    train        = dataset[train_mask].reset_index(drop=True)
-    test         = dataset[test_mask].reset_index(drop=True)
-    private_test = dataset[private_test_mask].reset_index(drop=True)
-
-    print(f"\n[setup_data] Split summary:")
-    print(f"  train:        {len(train):>4} rows  ({train['quarter_end'].min().date()} → {train['quarter_end'].max().date()})")
-    print(f"  test:         {len(test):>4} rows  ({test['quarter_end'].min().date()} → {test['quarter_end'].max().date()})")
-    print(f"  private_test: {len(private_test):>4} rows  ({private_test['quarter_end'].min().date()} → {private_test['quarter_end'].max().date()})")
-
-    label_col  = "GDP_growth"
-    id_cols    = ["country", "year", "quarter_end"]
-
-    # ── Save ──────────────────────────────────────────────────────────────────
-    def save(df, folder, name):
-        path = os.path.join(out_root, folder, name)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        df.to_csv(path, index=False)
-        print(f"  Saved {path}  ({df.shape})")
-
-    train_features = train.drop(columns=[label_col])
-    train_labels   = train[id_cols + [label_col]]
-
-    test_features  = test.drop(columns=[label_col])
-    test_labels    = test[id_cols + [label_col]]
-
-    pt_features    = private_test.drop(columns=[label_col])
-    pt_labels      = private_test[id_cols + [label_col]]
+    # Serialise Time as string to avoid timezone issues
+    for df in [p_train, p_test, p_pt]:
+        df["Time"] = df["Time"].dt.strftime("%Y-%m-%d")
+    for df in [l_train, l_test, l_pt]:
+        df["Time"] = df["Time"].dt.strftime("%Y-%m-%d")
 
     print("\n[setup_data] Saving files ...")
-    save(train_features, "dev_phase/input_data/train",        "train_features.csv")
-    save(train_labels,   "dev_phase/input_data/train",        "train_labels.csv")
-    save(test_features,  "dev_phase/input_data/test",         "test_features.csv")
-    save(pt_features,    "dev_phase/input_data/private_test", "private_test_features.csv")
-    save(test_labels,    "dev_phase/reference_data",          "test_labels.csv")
-    save(pt_labels,      "dev_phase/reference_data",          "private_test_labels.csv")
-
+    _save(p_train, out_root, "dev_phase/input_data/train",        "train_features.csv")
+    _save(l_train, out_root, "dev_phase/input_data/train",        "train_labels.csv")
+    _save(p_test,  out_root, "dev_phase/input_data/test",         "test_features.csv")
+    _save(p_pt,    out_root, "dev_phase/input_data/private_test", "private_test_features.csv")
+    _save(l_test,  out_root, "dev_phase/reference_data",          "test_labels.csv")
+    _save(l_pt,    out_root, "dev_phase/reference_data",          "private_test_labels.csv")
+    # Label skeletons: country + Time only, placed alongside features
+    # Used by ingestion to know which (country, quarter) pairs to predict
+    _save(l_test[["country", "Time"]], out_root,
+          "dev_phase/input_data/test",         "test_labels_skeleton.csv")
+    _save(l_pt[["country", "Time"]],  out_root,
+          "dev_phase/input_data/private_test", "private_test_labels_skeleton.csv")
     print("\n[setup_data] Done.")
-
-
-def generate_synthetic_data(out_root: str, n_per_split: tuple = (200, 60, 80)):
-    """
-    Generate a small synthetic dataset for CI / testing purposes.
-    Mimics the real feature schema but uses random data.
-    """
-    print("[setup_data] Generating synthetic data for CI ...")
-    np.random.seed(42)
-    countries = ["AT", "BE", "DE", "EL", "ES", "IE", "IT", "NL", "PT"]
-    feat_cols = [f"{feat}_m{i}" for feat in MONTHLY_FEATURES for i in range(1, 4)]
-
-    def _make_split(n, start_year):
-        rows = []
-        for i in range(n):
-            c = countries[i % len(countries)]
-            y = start_year + i // (len(countries) * 4)
-            rows.append({
-                "country": c,
-                "year": y,
-                "quarter_end": f"{y}-03-01",
-                **{f: float(np.random.randn() + 100) for f in feat_cols},
-            })
-        return pd.DataFrame(rows)
-
-    id_cols = ["country", "year", "quarter_end"]
-    label_col = "GDP_growth"
-
-    for split, n, sy in zip(
-        ["train", "test", "private_test"], n_per_split, [2000, 2016, 2020]
-    ):
-        df = _make_split(n, sy)
-        df[label_col] = np.random.randn(n) * 2
-
-        features = df[id_cols + feat_cols]
-        labels   = df[id_cols + [label_col]]
-
-        if split == "train":
-            features.to_csv(os.path.join(out_root, "dev_phase/input_data/train/train_features.csv"), index=False)
-            labels.to_csv(  os.path.join(out_root, "dev_phase/input_data/train/train_labels.csv"),   index=False)
-        elif split == "test":
-            features.to_csv(os.path.join(out_root, "dev_phase/input_data/test/test_features.csv"), index=False)
-            labels.to_csv(  os.path.join(out_root, "dev_phase/reference_data/test_labels.csv"),     index=False)
-        else:
-            features.to_csv(os.path.join(out_root, "dev_phase/input_data/private_test/private_test_features.csv"), index=False)
-            labels.to_csv(  os.path.join(out_root, "dev_phase/reference_data/private_test_labels.csv"),            index=False)
-
-    print("[setup_data] Synthetic data generated.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--data-dir",
-        default=".",
-        help="Directory containing the raw *data.xlsx files.",
-    )
-    parser.add_argument(
-        "--out-root",
-        default=".",
-        help="Root of the competition repo (default: current directory).",
-    )
-    parser.add_argument(
-        "--ci",
-        action="store_true",
-        help="Generate synthetic data instead of reading real xlsx files (for CI).",
-    )
+    parser.add_argument("--data-dir", default=".", help="Directory with raw *data.xlsx files.")
+    parser.add_argument("--out-root", default=".",  help="Root of the competition repo.")
+    parser.add_argument("--ci", action="store_true", help="Generate synthetic data for CI.")
     args = parser.parse_args()
 
-    # Ensure output directories exist
-    for d in [
-        "dev_phase/input_data/train",
-        "dev_phase/input_data/test",
-        "dev_phase/input_data/private_test",
-        "dev_phase/reference_data",
-    ]:
+    for d in ["dev_phase/input_data/train", "dev_phase/input_data/test",
+              "dev_phase/input_data/private_test", "dev_phase/reference_data"]:
         os.makedirs(os.path.join(args.out_root, d), exist_ok=True)
 
     if args.ci:
