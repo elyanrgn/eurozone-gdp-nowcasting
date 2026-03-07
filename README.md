@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/YOUR_USERNAME/eurozone-gdp-nowcasting/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/eurozone-gdp-nowcasting/actions)
 
-> **DataCamp Challenge · CentraleSupélec / HI-Paris**
+> **DataCamp Challenge · HI-Paris**
 
 ## Overview
 

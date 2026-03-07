@@ -22,6 +22,10 @@ INCLUDE = [
     "pages/",
     "dev_phase/input_data.zip",
     "dev_phase/reference_data.zip",
+    "solution/",
+    "dev_phase/",
+    "scoring_res/",
+    "ingestion_res/",
 ]
 
 
@@ -32,7 +36,7 @@ def zip_dir(zf: zipfile.ZipFile, dirpath: str, arcbase: str):
             if fname.endswith(".pyc"):
                 continue
             full = os.path.join(root, fname)
-            arc  = os.path.join(arcbase, os.path.relpath(full, dirpath))
+            arc = os.path.join(arcbase, os.path.relpath(full, dirpath))
             zf.write(full, arc)
             print(f"  + {arc}")
 
