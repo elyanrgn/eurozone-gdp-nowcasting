@@ -1,6 +1,6 @@
 # EuroZone GDP Nowcasting — Codabench Competition
 
-[![CI](https://github.com/YOUR_USERNAME/eurozone-gdp-nowcasting/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/eurozone-gdp-nowcasting/actions)
+[![CI](https://github.com/elyanrgn/eurozone-gdp-nowcasting/actions/workflows/ci.yml/badge.svg)](https://github.com/elyanrgn/eurozone-gdp-nowcasting/actions)
 
 > **DataCamp Challenge · HI-Paris**
 
