@@ -2,11 +2,11 @@
 
 | Date | Event |
 |---|---|
-| **January 6, 2025** | Competition opens — development phase begins |
-| **January 6 → March 28, 2025** | **Development phase:** submit against the 2016–2019 test set. Leaderboard shows RMSE on dev test. |
-| **March 28, 2025 (23:59 UTC)** | Development phase closes — no more submissions accepted |
-| **March 28, 2025** | Final scoring: model evaluated on the private test set (2020–2025, includes COVID shock) |
-| **April 4, 2025** | Final leaderboard published — winners announced |
+| **March 8, 2026** | Competition opens — development phase begins |
+| **March 8 → March 28, 2026** | **Development phase:** submit against the 2016–2019 test set. Leaderboard shows RMSE on dev test. |
+| **March 28, 2026 (23:59 UTC)** | Development phase closes — no more submissions accepted |
+| **March 28, 2026** | Final scoring: model evaluated on the private test set (2020–2025, includes COVID shock) |
+| **April 4, 2026** | Final leaderboard published — winners announced |
 
 ---
 
