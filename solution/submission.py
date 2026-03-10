@@ -53,19 +53,49 @@ from sklearn.preprocessing import StandardScaler
 
 # Monthly variables to aggregate across the 3 months of each quarter
 MONTHLY_VARS = [
-    "BCI", "CCI", "SHIX",
-    "HICPOV", "HICPG", "HICPIN",
-    "UNETOT", "UNEO25",
-    "LTIRT", "REER42",
-    "ESENTIX", "ICONFIX", "CCONFIX", "KCONFIX", "RTCONFIX", "SCONFIX",
+    "BCI",
+    "CCI",
+    "SHIX",
+    "HICPOV",
+    "HICPG",
+    "HICPIN",
+    "UNETOT",
+    "UNEO25",
+    "LTIRT",
+    "REER42",
+    "ESENTIX",
+    "ICONFIX",
+    "CCONFIX",
+    "KCONFIX",
+    "RTCONFIX",
+    "SCONFIX",
 ]
 
 # Quarterly variables (already one value per quarter, take the quarter-end value)
 QUARTERLY_VARS = [
-    "EXPGS", "IMPGS", "GFCE", "HFCE", "GFCF",
-    "EMP", "SEMP", "ULCIN", "ULCMN", "ULCFC", "ULCPR", "ULCRT",
-    "WS", "ESC", "TEMP", "DFGDP", "RPRP",
-    "GGASS", "GGLB", "HHASS", "HHLB", "NFCASS", "NFCLB",
+    "EXPGS",
+    "IMPGS",
+    "GFCE",
+    "HFCE",
+    "GFCF",
+    "EMP",
+    "SEMP",
+    "ULCIN",
+    "ULCMN",
+    "ULCFC",
+    "ULCPR",
+    "ULCRT",
+    "WS",
+    "ESC",
+    "TEMP",
+    "DFGDP",
+    "RPRP",
+    "GGASS",
+    "GGLB",
+    "HHASS",
+    "HHLB",
+    "NFCASS",
+    "NFCLB",
 ]
 
 
@@ -80,6 +110,9 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
     Sorted by (country, Time).
     """
     panel = panel.copy()
+    if panel.empty:
+        return pd.DataFrame(columns=["country", "Time"])
+
     panel["Time"] = pd.to_datetime(panel["Time"])
 
     def to_quarter_end(t):
@@ -96,22 +129,29 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
             if var in grp.columns:
                 vals = pd.to_numeric(grp[var], errors="coerce").dropna()
                 row[f"{var}_mean"] = vals.mean() if len(vals) else np.nan
-                row[f"{var}_diff"] = (vals.iloc[-1] - vals.iloc[0]) if len(vals) >= 2 else np.nan
+                row[f"{var}_diff"] = (
+                    (vals.iloc[-1] - vals.iloc[0]) if len(vals) >= 2 else np.nan
+                )
         # Quarterly: take the quarter-end month value
         qend_row = grp[grp["Time"] == qe]
         if len(qend_row) == 0:
             qend_row = grp.iloc[[-1]]
         for var in QUARTERLY_VARS:
             if var in qend_row.columns:
-                row[f"{var}"] = pd.to_numeric(qend_row[var].values[0], errors="coerce") \
-                                if len(qend_row) else np.nan
+                row[f"{var}"] = (
+                    pd.to_numeric(qend_row[var].values[0], errors="coerce")
+                    if len(qend_row)
+                    else np.nan
+                )
         records.append(row)
 
-    feat_df = pd.DataFrame(records).sort_values(["country", "Time"]).reset_index(drop=True)
+    feat_df = (
+        pd.DataFrame(records).sort_values(["country", "Time"]).reset_index(drop=True)
+    )
     return feat_df  # country and Time are kept for merging
 
 
-def get_X_y(feat_df: pd.DataFrame, labels: pd.DataFrame):
+def get_X_y(feat_df: pd.DataFrame, labels: pd.DataFrame, le: LabelEncoder):
     """Merge engineered features with labels on (country, Time), return X and y."""
     labels = labels.copy()
     labels["Time"] = pd.to_datetime(labels["Time"])
@@ -119,11 +159,8 @@ def get_X_y(feat_df: pd.DataFrame, labels: pd.DataFrame):
     feat_df["Time"] = pd.to_datetime(feat_df["Time"])
     merged = feat_df.merge(labels, on=["country", "Time"], how="inner")
     y = merged["GDP_growth"].values
-    X = merged.drop(columns=["Time", "GDP_growth", "country"])
-    # Encode country (it was dropped above — re-add encoded version)
-    le = LabelEncoder()
     X = merged.drop(columns=["Time", "GDP_growth"])
-    X["country_enc"] = le.fit_transform(X["country"].astype(str))
+    X["country_enc"] = le.transform(X["country"].astype(str))
     X = X.drop(columns=["country"])
     X = X.apply(pd.to_numeric, errors="coerce")
     X = X.fillna(X.median())
@@ -132,10 +169,13 @@ def get_X_y(feat_df: pd.DataFrame, labels: pd.DataFrame):
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-def get_predictions(X_train_raw: pd.DataFrame,
-                    y_train: pd.DataFrame,
-                    X_test_raw: pd.DataFrame,
-                    label_skeleton: pd.DataFrame) -> np.ndarray:
+
+def get_predictions(
+    X_train_raw: pd.DataFrame,
+    y_train: pd.DataFrame,
+    X_test_raw: pd.DataFrame,
+    label_skeleton: pd.DataFrame,
+) -> np.ndarray:
     """
     Full pipeline: feature engineering → model fit → predict.
 
@@ -152,12 +192,25 @@ def get_predictions(X_train_raw: pd.DataFrame,
     -------
     1-D array of float, length = len(label_skeleton)
     """
+    # --- Build one LabelEncoder fitted on ALL known countries ---
+    # Use the union of train, test, and skeleton to avoid unseen-label errors
+    # even when CI data only has a subset of countries.
+    ALL_COUNTRIES = ["AT", "BE", "DE", "EL", "ES", "FR", "IE", "IT", "NL", "PT"]
+    seen_countries = (
+        set(ALL_COUNTRIES)
+        | set(X_train_raw["country"].unique())
+        | set(X_test_raw["country"].unique())
+        | set(label_skeleton["country"].unique())
+    )
+    le = LabelEncoder()
+    le.fit(sorted(seen_countries))
+
     # --- Engineer features ---
     train_feats = engineer_features(X_train_raw)
-    test_feats  = engineer_features(X_test_raw)
+    test_feats = engineer_features(X_test_raw)
 
     # --- Build train X/y ---
-    X_train, y = get_X_y(train_feats, y_train)
+    X_train, y = get_X_y(train_feats, y_train, le)
     feat_cols = X_train.columns.tolist()
 
     # --- Build test X aligned to label_skeleton order ---
@@ -167,13 +220,11 @@ def get_predictions(X_train_raw: pd.DataFrame,
 
     # Merge on (country, Time) to get one row per skeleton entry, in skeleton order
     test_merged = label_skeleton.merge(test_feats, on=["country", "Time"], how="left")
-
-    # Encode country
-    le = LabelEncoder()
-    le.fit(list(X_train_raw["country"].unique()) + list(X_test_raw["country"].unique()))
     test_merged["country_enc"] = le.transform(test_merged["country"].astype(str))
 
-    X_test = test_merged.drop(columns=["Time", "country", "GDP_growth"], errors="ignore")
+    X_test = test_merged.drop(
+        columns=["Time", "country", "GDP_growth"], errors="ignore"
+    )
     X_test = X_test.apply(pd.to_numeric, errors="coerce")
     for c in feat_cols:
         if c not in X_test.columns:
@@ -181,17 +232,22 @@ def get_predictions(X_train_raw: pd.DataFrame,
     X_test = X_test[feat_cols].fillna(X_train.median())
 
     # --- Model ---
-    model = Pipeline([
-        ("scaler", StandardScaler()),
-        ("reg", GradientBoostingRegressor(
-            n_estimators=200,
-            max_depth=4,
-            learning_rate=0.05,
-            subsample=0.8,
-            min_samples_leaf=5,
-            random_state=42,
-        )),
-    ])
+    model = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "reg",
+                GradientBoostingRegressor(
+                    n_estimators=200,
+                    max_depth=4,
+                    learning_rate=0.05,
+                    subsample=0.8,
+                    min_samples_leaf=5,
+                    random_state=42,
+                ),
+            ),
+        ]
+    )
     model.fit(X_train, y)
     return model.predict(X_test)
 
@@ -199,19 +255,26 @@ def get_predictions(X_train_raw: pd.DataFrame,
 # ── Local test ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import os, sys, math
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ingestion_program"))
+
+    sys.path.insert(
+        0, os.path.join(os.path.dirname(__file__), "..", "ingestion_program")
+    )
     from bench_utils import load_train_data, load_test_features, load_labels
     from sklearn.metrics import mean_squared_error
 
     root = os.path.join(os.path.dirname(__file__), "..")
     DATA_DIR = os.path.join(root, "dev_phase", "input_data")
-    REF_DIR  = os.path.join(root, "dev_phase", "reference_data")
+    REF_DIR = os.path.join(root, "dev_phase", "reference_data")
 
     X_train_raw, y_train = load_train_data(os.path.join(DATA_DIR, "train"))
     X_test_raw = load_test_features(DATA_DIR, split="test")
     y_test_true = load_labels(REF_DIR, "test")
 
-    label_skeleton = y_test_true[["country", "Time"]].sort_values(["country", "Time"]).reset_index(drop=True)
+    label_skeleton = (
+        y_test_true[["country", "Time"]]
+        .sort_values(["country", "Time"])
+        .reset_index(drop=True)
+    )
     preds = get_predictions(X_train_raw, y_train, X_test_raw, label_skeleton)
 
     # Order must match labels sorted by (country, Time)
